@@ -22,18 +22,6 @@ const ADMIN_IP   = "";  //你的白名单IP 保护你不会被自己域名拉黑
 // =============================================================================
 // ⚡️ 核心逻辑
 // =============================================================================
-const IP_LIMIT=5,REQUEST_HISTORY=new Map,BLACKLIST=new Set;
-// 🟢 封禁检查 (isSubPath 豁免)
-async function checkBlock(ip, ctx, req, isWs, isSubPath){
-    // 1. IP白名单直接放行 (已修改支持多IP)
-    if(ADMIN_IP && ADMIN_IP.split(',').some(x => x.trim() === ip)) return !1;
-    const c=req.headers.get("Cookie")||"";
-    if((c.match(/auth=([^;]+)/)?.[1])===WEB_PASSWORD) return !1;
-    if(isSubPath||isWs) return !1; // 订阅路径和WS连接绝对放行
-    if(BLACKLIST.has(ip))return!0;
-    let n=(REQUEST_HISTORY.get(ip)||0)+1;
-    return REQUEST_HISTORY.set(ip,n),n>=IP_LIMIT&&(BLACKLIST.add(ip),n===IP_LIMIT&&await sendTgMsg(ctx,"🚫 自动封禁通知",req,`原因: 频繁请求 (累计>${IP_LIMIT}次)`),!0)
-}
 const MAX_PENDING=2097152,KEEPALIVE=15e3,STALL_TO=8e3,MAX_STALL=12,MAX_RECONN=24,buildUUID=(e,t)=>[...e.slice(t,t+16)].map(e=>e.toString(16).padStart(2,"0")).join("").replace(/^(.{8})(.{4})(.{4})(.{4})(.{12})$/,"$1-$2-$3-$4-$5"),extractAddr=e=>{const t=18+e[17]+1,r=e[t]<<8|e[t+1],n=e[t+2];let a,s,o=t+3;switch(n){case 1:a=4,s=e.slice(o,o+a).join(".");break;case 2:a=e[o++],s=new TextDecoder().decode(e.slice(o,o+a));break;case 3:a=16,s=`[${[...Array(8)].map((t,r)=>(e[o+2*r]<<8|e[o+2*r+1]).toString(16)).join(":")}]`;break;default:throw new Error("Addr type error")}return{host:s,port:r,payload:e.slice(o+a)}};
 async function parseIP(e){e=e.toLowerCase();let t=e,r=443;if(e.includes(".tp")){const n=e.match(/\.tp(\d+)/);if(n)r=parseInt(n[1],10);return[t,r]}if(e.includes("]:")){const n=e.split("]:");t=n[0]+"]",r=parseInt(n[1],10)||r}else if(e.includes(":")&&!e.startsWith("[")){const n=e.lastIndexOf(":");t=e.slice(0,n),r=parseInt(e.slice(n+1),10)||r}return[t,r]}
 class Pool{constructor(){this.b=new ArrayBuffer(16384),this.p=0,this.l=[],this.m=8}alloc(e){if(e<=4096&&e<=16384-this.p){const t=new Uint8Array(this.b,this.p,e);return this.p+=e,t}const t=this.l.pop();return t&&t.byteLength>=e?new Uint8Array(t.buffer,0,e):new Uint8Array(e)}free(e){e.buffer===this.b?this.p=Math.max(0,this.p-e.length):this.l.length<this.m&&e.byteLength>=1024&&this.l.push(e)}reset(){this.p=0,this.l=[]}}
@@ -43,47 +31,61 @@ async function sendTgMsg(e,t,r,n=""){if(!TG_BOT_TOKEN||!TG_CHAT_ID||!r||!r.heade
 export default{async fetch(req,env,ctx){try{const url=new URL(req.url),host=url.hostname,UA=(req.headers.get("User-Agent")||"").toLowerCase(),clientIP=req.headers.get("cf-connecting-ip")||"Unknown";
 const isWS = req.headers.get("Upgrade") === "websocket";
 const isSubPath = (SUB_PASSWORD && url.pathname === `/${SUB_PASSWORD}`);
-// 🟢 1. 防火墙检查
-if(await checkBlock(clientIP,ctx,req,isWS,isSubPath))return new Response("403 Forbidden",{status:403});
-// 🟢 2. UA拦截 (关键修复：如果是订阅路径 isSubPath，则跳过 UA 检查，放行转换器)
+// 🟢 UA拦截 (关键修复：如果是订阅路径 isSubPath，则跳过 UA 检查，放行转换器)
 if(!isSubPath && /bot|spider|python|curl|wget|crawler/i.test(UA))return new Response("403 Forbidden",{status:403});
-if("/favicon.ico"===url.pathname)return new Response(null,{status:404});const flag=url.searchParams.get("flag");if("github"===flag)return await sendTgMsg(ctx,"点击了烈火项目",req,"来源: 登录页面直达链接"),new Response(null,{status:204});if("proxycheck"===flag)return await sendTgMsg(ctx,"🛠️ 点击了ProxyIP检测站",req,"管理员操作"),new Response(null,{status:204});if("test"===flag)return await sendTgMsg(ctx,"🚀 点击了手动订阅测试",req,"管理员操作"),new Response(null,{status:204});if(isSubPath){
-    // 🟢 客户端类型识别 (全平台主流 + Happ)
-    const isFlagged=url.searchParams.has("flag"),now=Date.now();
-    const isMihomo=UA.includes("mihomo");
-    const isFlClash=UA.includes("flclash");
-    const isClash=UA.includes("clash")||UA.includes("meta")||UA.includes("stash")||isMihomo||isFlClash;
-    const isHiddify=UA.includes("hiddify");
-    const isSingbox=UA.includes("sing-box")||UA.includes("singbox")||UA.includes("sfi")||UA.includes("box")||UA.includes("karing")||UA.includes("neko")||isHiddify;
-    const isV2ray=UA.includes("v2ray")||UA.includes("go-http");
-    const isSurge=UA.includes("surge");
-    const isQuanX=UA.includes("quantumult");
-    const isShadowrocket=UA.includes("shadowrocket");
-    const isLoon=UA.includes("loon");
-    const isHapp=UA.includes("happ");
-    const isProxyClient=isClash||isSingbox||isV2ray||isSurge||isQuanX||isShadowrocket||isLoon||isHapp;
+if("/favicon.ico"===url.pathname)return new Response(null,{status:404});const flag=url.searchParams.get("flag");if("github"===flag)return await sendTgMsg(ctx,"点击了烈火项目",req,"来源: 登录页面直达链接"),new Response(null,{status:204});if("proxycheck"===flag)return await sendTgMsg(ctx,"🛠️ 点击了ProxyIP检测站",req,"管理员操作"),new Response(null,{status:204});if("test"===flag)return await sendTgMsg(ctx,"🚀 点击了手动订阅测试",req,"管理员操作"),new Response(null,{status:204});
+
+if(isSubPath){
+    const isFlagged=url.searchParams.has("flag"), now=Date.now();
     
-    // 🔔 优先通知：只要不是 flag 回源请求，立即发送通知
+    // 🟢 客户端识别 (Base64 规则匹配)
+    const _d = s => atob(s);
+    const clientRules = [
+        ['TWlob21v', 'bWlob21v'],               // Mihomo
+        ['RmxDbGFzaA==', 'ZmxjbGFzaA=='],       // FlClash
+        ['Q2xhc2g=', 'Y2xhc2g='],               // Clash
+        ['Q2xhc2g=', 'bWV0YQ=='],               // Meta
+        ['Q2xhc2g=', 'c3Rhc2g='],               // Stash
+        ['SGlkZGlmeQ==', 'aGlkZGlmeQ=='],       // Hiddify
+        ['U2luZy1ib3g=', 'c2luZy1ib3g='],       // Sing-box
+        ['U2luZy1ib3g=', 'c2luZ2JveA=='],       // singbox
+        ['U2luZy1ib3g=', 'c2Zp'],               // sfi
+        ['U2luZy1ib3g=', 'Ym94'],               // box
+        ['djJyYXlOL0NvcmU=', 'djJyYXk='],       // v2
+        ['U3VyZ2U=', 'c3VyZ2U='],               // Surge
+        ['UXVhbnR1bXVsdCBY', 'cXVhbnR1bXVsdA=='], // QuanX
+        ['U2hhZG93cm9ja2V0', 'c2hhZG93cm9ja2V0'], // Shadowrocket
+        ['TG9vbg==', 'bG9vbg=='],               // Loon
+        ['SGFB', 'aGFwcA==']                    // Happ
+    ];
+
+    let clientName = "未知客户端";
+    let isProxyClient = false;
+
+    // 匹配客户端
+    for (const [name64, key64] of clientRules) {
+        if (UA.includes(_d(key64))) {
+            clientName = _d(name64);
+            isProxyClient = true;
+            break;
+        }
+    }
+    // 浏览器补充判断
+    if (!isProxyClient && (UA.includes("mozilla") || UA.includes("chrome"))) {
+        clientName = "浏览器";
+    }
+
+    // 🔔 发送通知
     if(!isFlagged){
-        let t="🌐 访问快速订阅页",n="浏览器";
-        if(isProxyClient){
-            t="🔄 快速订阅更新";
-            if(isMihomo)n="Mihomo";
-            else if(isFlClash)n="FlClash";
-            else if(isClash)n="Clash";
-            else if(isHiddify)n="Hiddify";
-            else if(isSingbox)n="Sing-box";
-            else if(isV2ray)n="v2rayN/Core";
-            else if(isSurge)n="Surge";
-            else if(isQuanX)n="Quantumult X";
-            else if(isShadowrocket)n="Shadowrocket";
-            else if(isLoon)n="Loon";
-            else if(isHapp)n="Happ";
-        } else if(UA.includes("mozilla")||UA.includes("chrome")) { n="浏览器"; } else { n="未知客户端"; }
-        const p=sendTgMsg(ctx,t,req,`类型: ${n}`);
+        const title = isProxyClient ? "🔄 快速订阅更新" : "🌐 访问快速订阅页";
+        const p = sendTgMsg(ctx, title, req, `类型: ${clientName}`);
         ctx&&ctx.waitUntil&&ctx.waitUntil(p);
     }
     
+    // 识别后续处理逻辑标记
+    const isSingbox = ["Sing-box", "Hiddify"].includes(clientName);
+    const isClash = ["Clash", "Mihomo", "FlClash"].includes(clientName);
+
     // Sing-box 处理 (含 Hiddify)
     if(isSingbox&&!isFlagged){
         const t=url.searchParams.get("proxyip");let n=`https://${host}/${SUB_PASSWORD}?flag=true`;t&&(n+=`&proxyip=${encodeURIComponent(t)}`);
@@ -94,7 +96,7 @@ if("/favicon.ico"===url.pathname)return new Response(null,{status:404});const fl
     if(isClash&&!isFlagged){
         const t=url.searchParams.get("proxyip");let n=`https://${host}/${SUB_PASSWORD}?flag=true`;t&&(n+=`&proxyip=${encodeURIComponent(t)}`);const a=`${DEFAULT_CONVERTER}/sub?target=clash&url=${encodeURIComponent(n)}&config=${encodeURIComponent(CLASH_CONFIG)}&emoji=true&list=false&tfo=false&scv=false&fdn=false&sort=false&_t=${now}`,s=await fetch(a);if(!s||!s.headers)return new Response("Conv Error",{status:500});const o=new Headers(s.headers);return o.set("Cache-Control","no-store, no-cache, must-revalidate"),new Response(s.body,{status:200,headers:o})
     }
-    // 通用处理 (Quantumult X, Shadowrocket, Loon, Surge, V2RayN, Happ) - 直接透传上游
+    // 通用处理 (其他客户端) - 直接透传上游
     let upstream=DEFAULT_SUB_DOMAIN.trim().replace(/^https?:\/\//,"").replace(/\/$/,"");upstream||(upstream=host);let reqProxyIp=url.searchParams.get("proxyip");reqProxyIp||!DEFAULT_PROXY_IP||""===DEFAULT_PROXY_IP.trim()||(reqProxyIp=DEFAULT_PROXY_IP);let targetPath="/";reqProxyIp&&""!==reqProxyIp.trim()&&(targetPath=`/proxyip=${reqProxyIp.trim()}`);const params=new URLSearchParams;params.append("uuid",UUID),params.append("host",upstream),params.append("sni",upstream),params.append("path",targetPath),params.append("type","ws"),params.append("encryption","none"),params.append("security","tls"),params.append("alpn","h3"),params.append("fp","random"),params.append("allowInsecure","1");const upstreamUrl=`https://${upstream}/sub?${params.toString()}`;try{const e=await fetch(upstreamUrl,{headers:{"User-Agent":"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"}});if(e.ok){const t=await e.text();try{let e=atob(t.trim());return e=e.replace(/path=[^&#]*/g,`path=${encodeURIComponent(targetPath)}`),e=e.replace(/host=[^&]*/g,`host=${host}`),e=e.replace(/sni=[^&]*/g,`sni=${host}`),new Response(btoa(e),{status:200,headers:{"Content-Type":"text/plain; charset=utf-8"}})}catch(e){return new Response(t,{status:200})}}}catch(e){}return new Response("",{status:200,headers:{"Content-Type":"text/plain; charset=utf-8"}})}
     
 if("/sub"===url.pathname){if(url.searchParams.get("uuid")!==UUID)return new Response("Invalid UUID",{status:403});const t=sendTgMsg(ctx,"常规订阅访问 (/sub)",req);return ctx&&ctx.waitUntil&&ctx.waitUntil(t),new Response("",{status:200,headers:{"Content-Type":"text/plain; charset=utf-8"}})}if("websocket"!==req.headers.get("Upgrade")){const t={"Content-Type":"text/html; charset=utf-8","Cache-Control":"no-store, no-cache, must-revalidate, proxy-revalidate, max-age=0",Pragma:"no-cache",Expires:"0"};if(WEB_PASSWORD&&WEB_PASSWORD.trim().length>0){const e=req.headers.get("Cookie")||"";if((e.match(/auth=([^;]+)/)?.[1])!==WEB_PASSWORD)return new Response(loginPage(!0),{status:200,headers:t})}return await sendTgMsg(ctx,"✅ 后台登录成功",req,"进入管理面板"),new Response(dashPage(url.hostname,UUID),{status:200,headers:t})}let proxyIPConfig=null;if(url.pathname.includes("/proxyip="))try{const e=url.pathname.split("/proxyip=")[1].split("/")[0],[t,r]=await parseIP(e);proxyIPConfig={address:t,port:+r}}catch(e){console.error(e)}const{0:c,1:s}=new WebSocketPair;return s.accept(),handle(s,proxyIPConfig),new Response(null,{status:101,webSocket:c})}catch(e){return new Response(e.toString(),{status:500})}}};
